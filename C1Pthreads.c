@@ -4,27 +4,24 @@
 #include <string.h>
 #include <fcntl.h>
 #include <unistd.h>
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <errno.h>
 
-#define NUM_THREADS 4
-
+#define NUM_THREADS  4
 #define MAX_LINE_LEN 65536
+#define BATCH_SIZE   1000 // # of lines read in at a time --> think about changing this to just read in 1MB at a time
+#define READ_BUF_SIZE (1 << 20) // 1 MB 
 
 const char* filePath = "/homes/eyv/cis520/wiki_dump.txt";
 
 
-static char (*lines)[MAX_LINE_LEN] = NULL; // stored file
-static int  *results               = NULL; // greatest ascii value for each line
-static int   total_lines           = 0;    // total lines
+static char lines[BATCH_SIZE][MAX_LINE_LEN]; // part of read in file
+static int  results[BATCH_SIZE]; 
+static int  total_lines = 0; // amount of lines loaded into lines 
 
 // this sets the bounds for each thread where it starts and stops when reading each chunk
 typedef struct {
     int start; // inclusive
     int end;   // exclusive
 } ThreadArgs;
-
 
 // finds the greatest ascii value in each line
 static void* compute_max(void* arg) {
@@ -40,128 +37,101 @@ static void* compute_max(void* arg) {
     return NULL;
 }
 
-int main(void) {
-
-    // OPens the file 
-    int fd = open(filePath, O_RDONLY);
-    if (fd < 0) {
-        perror("open");
-        return EXIT_FAILURE;
-    }
-    // stat struct to get file meta data
-    struct stat file_stat;
-    if (fstat(fd, &file_stat) < 0) {
-        perror("fstat");
-        close(fd);
-        return EXIT_FAILURE;
-    }
-
-    // gets the file size if 0 exits the function
-    size_t file_size = (size_t)file_stat.st_size;
-    if (file_size == 0) {
-        close(fd);
-        return EXIT_FAILURE;
-    }
-
-    // allocates buffer for file size + 1 for null terminator 
-    char* buf = malloc(file_size + 1);
-    if (buf == NULL) {
-        perror("malloc");
-        close(fd);
-        return EXIT_FAILURE;
-    }
-
-    // Loops until all bytes in the file are read into the buffer
-    size_t total_bytes_read = 0;
-    while (total_bytes_read < file_size) {
-        ssize_t bytes_read = read(fd, buf + total_bytes_read, file_size - total_bytes_read);
-        // Bytes are read
-        if (bytes_read > 0)
-            total_bytes_read += bytes_read;
-        else if (bytes_read == 0) // reached EOF early so exit 
-        {
-            break;
-        }
-        else if (bytes_read == -1 && errno == EINTR) // signal interrupt did not error so try again
-            continue;
-        else
-            break;
-    }
-
-    // Closes the file and makes sure all bytes were read 
-    if (close(fd) < 0 || total_bytes_read < file_size) {
-        free(buf);
-        return EXIT_FAILURE;
-    }
-
-    buf[total_bytes_read] = '\0'; // sets null terminator into end of buffer
-
-    // Pass 1: count newlines to know how many lines to allocate
-    int line_count = 0;
-    for (size_t i = 0; i < total_bytes_read; i++)
-        if (buf[i] == '\n') line_count++;
-    if (total_bytes_read > 0 && buf[total_bytes_read - 1] != '\n')
-        line_count++;
-
-    // Allocate exactly what we need
-    lines   = malloc((size_t)line_count * sizeof(*lines));
-    results = malloc((size_t)line_count * sizeof(int));
-    if (lines == NULL || results == NULL) {
-        perror("malloc");
-        free(buf);
-        return EXIT_FAILURE;
-    }
-
-    // Parse buffer into individual lines
-    char* line_start = buf;
-    char* ptr = buf;
-    while (*ptr != '\0') {
-        if (*ptr == '\n') {
-            *ptr = '\0';
-            strncpy(lines[total_lines], line_start, MAX_LINE_LEN - 1);
-            lines[total_lines][MAX_LINE_LEN - 1] = '\0';
-            total_lines++;
-            line_start = ptr + 1;
-        }
-        ptr++;
-    }
-
-    // the check for if the last char is not a new line 
-    if (ptr != line_start) {
-        strncpy(lines[total_lines], line_start, MAX_LINE_LEN - 1);
-        lines[total_lines][MAX_LINE_LEN - 1] = '\0';
-        total_lines++;
-    }
-
-    free(buf); // frees the buffer 
-
-    // creates threads 
+// spin up threads on the current batch, wait then print
+static void process_and_print(int global_offset) {
     pthread_t  threads[NUM_THREADS];
     ThreadArgs args[NUM_THREADS];
+    int chunk = total_lines / NUM_THREADS; 
 
-    int chunk = total_lines / NUM_THREADS; // splits into how many chunks depending on how many threads 
-
-
+    // creates threads and sets them to use compute_max
     for (int t = 0; t < NUM_THREADS; t++) {
         args[t].start = t * chunk;
         args[t].end   = (t == NUM_THREADS - 1) ? total_lines : (t + 1) * chunk;
         if (pthread_create(&threads[t], NULL, compute_max, &args[t]) != 0) {
             perror("pthread_create");
-            return EXIT_FAILURE;
+            exit(EXIT_FAILURE);
         }
     }
-
-    // waits for all threads to finish
-    for (int t = 0; t < NUM_THREADS; t++) {
+    // waits for all threadses to findih
+    for (int t = 0; t < NUM_THREADS; t++)
         pthread_join(threads[t], NULL);
+
+    // prints results 
+    for (int i = 0; i < total_lines; i++)
+        printf("%d: %d\n", global_offset + i, results[i]);
+}
+
+int main(void) {
+
+    // opens file
+    int fd = open(filePath, O_RDONLY);
+    if (fd < 0) {
+        perror("open");
+        return EXIT_FAILURE;
     }
 
-    // prints the results of the lines
-    for (int i = 0; i < total_lines; i++) {
-        printf("%d: %d\n", i, results[i]);
+   
+    static char read_buf[READ_BUF_SIZE];
+    static char leftover[MAX_LINE_LEN]; // this is for when read does not return a complete line
+    int leftover_len  = 0; // length of leftover line in chars
+    int global_offset = 0; // offset for current line number 
+
+    ssize_t n; // number of bytes read
+    while ((n = read(fd, read_buf, READ_BUF_SIZE)) > 0) {
+        char *ptr = read_buf;
+        char *end = read_buf + n; 
+
+        while (ptr < end) {
+            // find the next newline within this read
+            char *nl = memchr(ptr, '\n', (size_t)(end - ptr));
+            if (nl == NULL) {
+                // rest of buffer is a partial line 
+                size_t rem = (size_t)(end - ptr);
+                if (leftover_len + (int)rem < MAX_LINE_LEN) {
+                    memcpy(leftover + leftover_len, ptr, rem);
+                    leftover_len += (int)rem;
+                }
+                break;
+            }
+
+          
+            size_t seg_len  = (size_t)(nl - ptr);
+            int    line_len = leftover_len + (int)seg_len;
+            if (line_len >= MAX_LINE_LEN) line_len = MAX_LINE_LEN - 1;
+
+            //copies the leftover lines ot the current line
+            memcpy(lines[total_lines], leftover, (size_t)leftover_len);
+            memcpy(lines[total_lines] + leftover_len, ptr, (size_t)(line_len - leftover_len));
+            lines[total_lines][line_len] = '\0';
+
+            //reset cariables
+            leftover_len = 0;
+            total_lines++;
+            ptr = nl + 1;
+
+            // print and proccess everythign
+            if (total_lines == BATCH_SIZE) {
+                process_and_print(global_offset);
+                global_offset += BATCH_SIZE;
+                total_lines = 0;
+            }
+        }-
     }
 
-    free(lines);
-    free(results);
+    // read error
+    if (n < 0)
+        perror("read");
+
+    // flush any partial last line 
+    if (leftover_len > 0) {
+        leftover[leftover_len] = '\0';
+        memcpy(lines[total_lines], leftover, (size_t)leftover_len + 1);
+        total_lines++;
+    }
+
+    if (total_lines > 0)
+        process_and_print(global_offset);
+
+    close(fd);
     return EXIT_SUCCESS;
 }

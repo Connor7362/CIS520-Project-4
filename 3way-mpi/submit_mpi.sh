@@ -4,7 +4,6 @@
 #SBATCH --ntasks-per-node=4
 #SBATCH --mem-per-cpu=1G
 #SBATCH --time=00:30:00
-#SBATCH --constraint=mole
 #SBATCH --output=mpi_%j.out
 #SBATCH --error=mpi_%j.err
 

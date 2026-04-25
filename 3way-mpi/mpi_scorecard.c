@@ -2,6 +2,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <mpi.h>
+#include <fcntl.h>
+#include <unistd.h>
+
+#define BUFFER_SIZE 65536
 
 typedef struct {
     long line_number;
@@ -53,12 +57,12 @@ int main(int argc, char *argv[]) {
     }
 
     const char *filename = argv[1];
-    FILE *file = fopen(filename, "r");
+    int fd = open(filename, O_RDONLY);
 
-    if (file == NULL) {
-        fprintf(stderr, "Rank %d could not open file: %s\n", rank, filename);
-        MPI_Finalize();
-        return 1;
+    if(fd < 0){
+	fprintf(stderr, "Rank %d could not open file: %s\n", rank, filename);
+	MPI_Finalize();
+	return 1;
     }
 
     Result *local_results = NULL;
@@ -69,16 +73,66 @@ int main(int argc, char *argv[]) {
 
     if (local_results == NULL) {
         fprintf(stderr, "Rank %d failed to allocate memory\n", rank);
-        fclose(file);
+        close(fd);
         MPI_Finalize();
         return 1;
     }
 
-    char *line = NULL;
-    size_t len = 0;
-    long line_number = 0;
+    char buffer[BUFFER_SIZE];
+    ssize_t bytes_read;
 
-    while (getline(&line, &len, file) != -1) {
+    long line_number = 0;
+    int current_max = 0;
+    int has_chars = 0;
+
+    while ((bytes_read = read(fd, buffer, BUFFER_SIZE)) > 0) {
+        for (ssize_t i = 0; i < bytes_read; i++) {
+            unsigned char c = (unsigned char)buffer[i];
+
+            if (c == '\n') {
+                if (line_number % size == rank) {
+                    if (local_count == local_capacity) {
+                        local_capacity *= 2;
+                        Result *temp = realloc(local_results, local_capacity * sizeof(Result));
+
+                        if (temp == NULL) {
+                            fprintf(stderr, "Rank %d failed to grow memory\n", rank);
+                            free(local_results);
+                            close(fd);
+                            MPI_Finalize();
+                            return 1;
+                        }
+ 
+                        local_results = temp;
+                    }
+
+                    local_results[local_count].line_number = line_number;
+                    local_results[local_count].max_ascii = current_max;
+                    local_count++;
+                }
+
+                line_number++;
+                current_max = 0;
+                has_chars = 0;
+            } else if (c != '\r') {
+                has_chars = 1;
+
+                if ((int)c > current_max) {
+                    current_max = (int)c;
+                }
+            }
+        }
+    }
+
+    if (bytes_read < 0) {
+        fprintf(stderr, "Rank %d had an error while reading file\n", rank);
+        free(local_results);
+        close(fd);
+        MPI_Finalize();
+        return 1;
+    }
+
+    if (has_chars) {
         if (line_number % size == rank) {
             if (local_count == local_capacity) {
                 local_capacity *= 2;
@@ -87,26 +141,21 @@ int main(int argc, char *argv[]) {
                 if (temp == NULL) {
                     fprintf(stderr, "Rank %d failed to grow memory\n", rank);
                     free(local_results);
-                    free(line);
-                    fclose(file);
+                    close(fd);
                     MPI_Finalize();
                     return 1;
                 }
 
                 local_results = temp;
-            }
+           }
 
             local_results[local_count].line_number = line_number;
-            local_results[local_count].max_ascii = max_ascii_in_line(line);
+            local_results[local_count].max_ascii = current_max;
             local_count++;
         }
-
-        line_number++;
     }
 
-    free(line);
-    fclose(file);
-
+    close(fd);
     int *counts = NULL;
 
     if (rank == 0) {

@@ -1,1 +1,3 @@
 mpi_scorecard
+mpi_*.err
+mpi_*.out

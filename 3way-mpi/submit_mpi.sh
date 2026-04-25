@@ -7,9 +7,9 @@
 #SBATCH --output=mpi_%j.out
 #SBATCH --error=mpi_%j.err
 
-module load CMake/3.23.1-GCCcore-11.3.0 foss/2022a OpenMPI/4.1.4-GCC-11.3.0 CUDA/11.7.0
+module load CMake/3.23.1-GCCcore-11.3.0 foss/2022a OpenMPI/4.1.4-GCC-11.3.0
 
-make clean
-make
+make clean >&2
+make >&2
 
-srun ./mpi_scorecard ~eyv/cis520/wiki_dump.txt
+mpirun -np 4 ./mpi_scorecard ~eyv/cis520/wiki_dump.txt

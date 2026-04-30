@@ -1,0 +1,5 @@
+rm -f OpenMP_scorecard
+gcc -O2 -Wall -Wextra -fopenmp -o OpenMP_scorecard OpenMP_scorecard.c
+Job ID: 8158511
+CPUs per task (threads): 4
+Memory per CPU: 1024 MB

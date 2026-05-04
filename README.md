@@ -1,2 +1,11 @@
 # CIS520-Project-4
 Project 4 Repo for CIS520
+
+## MPI Architecture overview 
+
+The MPI implementation uses a distributed-memory model. Instead of threads sharing a single address space, multiple independent processes—called ranks—are launched, each with its own memory. Every rank opens the same input file using low‑level system calls (open(), read(), close()) and scans it in chunks. As each rank reads through the file, it keeps track of the current line number and the largest ASCII value on that line. Ownership of a line is determined by the expression line_number % num_ranks; for example, with four ranks, rank 0 handles lines 0, 4, 8… and rank 1 handles lines 1, 5, 9…, and so on. Each rank stores results only for its assigned lines. When all ranks have finished processing, the results are gathered back to rank 0. Rank 0 then sorts the line‑number/max‑ASCII pairs and prints the final output in the correct order. 
+
+Because each rank has its own memory space, no locks are required to protect shared data. Synchronization occurs only during the final gather and sort phases, which combine the distributed results into a single, ordered list for printing. This design avoids shared-memory race conditions but introduces overhead when multiple ranks must each scan the entire file and then communicate their results. 
+
+## Running MPI
+To run the MPI version, you usually choose between the provided Slurm script and a manual execution for small tests. On Beocat, you would go into the 3way-mpi folder and submit submit_mpi.sh with sbatch. The script takes care of loading the compiler and MPI modules, building the program, and launching it via mpirun; Slurm writes the output and error messages into log files named after the job ID. For local testing or debugging with a small input file, you can run the program yourself: first load the required modules (including OpenMPI) using the module load command, then compile the code with make clean && make, and finally start it with a command like mpirun -np 4 ./mpi_scorecard /path/to/small_input.txt, adjusting the number of processes and the input file name as needed. It’s important not to run the full 1.7 GB wiki file directly on a login node; use the Slurm script for those larger runs. 
